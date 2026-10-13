@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HoC ECTS-Filter</title>
+<style>
+  :root { --bg:#f7f7f5; --card:#fff; --fg:#1d1d1b; --muted:#6b6b66; --line:#e3e3de; --accent:#009682; --chip:#e8f4f1; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#151614; --card:#1e1f1d; --fg:#ececea; --muted:#9a9a94; --line:#33342f; --accent:#3cc2ac; --chip:#1f3330; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.45 system-ui, sans-serif; background:var(--bg); color:var(--fg); }
+  header { padding:20px 16px 8px; max-width:1100px; margin:auto; }
+  h1 { margin:0 0 4px; font-size:22px; }
+  .sub { color:var(--muted); font-size:13px; }
+  .filters { max-width:1100px; margin:auto; padding:8px 16px; display:flex; flex-wrap:wrap; gap:14px; align-items:center; }
+  .group { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+  .group b { font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; margin-right:2px; }
+  label.chip { background:var(--card); border:1px solid var(--line); border-radius:999px; padding:3px 10px; cursor:pointer; user-select:none; font-size:14px; }
+  label.chip:has(input:checked) { background:var(--chip); border-color:var(--accent); color:var(--accent); font-weight:600; }
+  label.chip input { display:none; }
+  input[type=search], select { background:var(--card); color:var(--fg); border:1px solid var(--line); border-radius:8px; padding:6px 10px; font:inherit; }
+  input[type=search] { min-width:220px; }
+  button { background:none; border:1px solid var(--line); color:var(--muted); border-radius:8px; padding:6px 10px; cursor:pointer; font:inherit; }
+  main { max-width:1100px; margin:auto; padding:8px 16px 40px; }
+  .count { color:var(--muted); font-size:13px; margin:4px 0 10px; }
+  .ev { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px 14px; margin-bottom:8px; display:grid; grid-template-columns:1fr auto; gap:4px 12px; }
+  .ev a { color:var(--fg); font-weight:600; text-decoration:none; }
+  .ev a:hover { color:var(--accent); text-decoration:underline; }
+  .meta { color:var(--muted); font-size:13px; }
+  .ects { font-weight:700; color:var(--accent); white-space:nowrap; text-align:right; }
+  .ects.unk { color:var(--muted); font-weight:400; }
+  .detail { grid-column:1/-1; color:var(--muted); font-size:12.5px; }
+  .loading { padding:40px 0; text-align:center; color:var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">HoC-Veranstaltungen</h1>
+  <div class="sub">ECTS werden aus den Kursbeschreibungen gelesen. „unbekannt" = keine Angabe in der Beschreibung (bitte auf der Kursseite prüfen).</div>
+</header>
+<div class="filters">
+  <div class="group" id="ectsGroup"><b>ECTS</b></div>
+  <div class="group"><b>Typ</b><select id="type"><option value="">alle</option></select></div>
+  <div class="group"><b>Sprache</b><select id="lang"><option value="">alle</option></select></div>
+  <input type="search" id="q" placeholder="Suche Titel / Dozent…">
+  <label class="chip"><input type="checkbox" id="exact">nur genau diese ECTS</label>
+  <button id="refresh" title="Daten neu von next.hoc.kit.edu laden">↻ neu laden</button>
+</div>
+<main>
+  <div class="count" id="count"></div>
+  <div id="list"><div class="loading">Lade Kurse… (beim ersten Mal ca. 30 s, danach gecacht)</div></div>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+let events = [];
+const fmtDate = s => s ? new Date(s).toLocaleString('de-DE', {weekday:'short', day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit'}) : '–';
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+function saveState() {
+  const st = { ects: [...document.querySelectorAll('#ectsGroup input:checked')].map(i => i.value),
+               type: $('#type').value, lang: $('#lang').value, q: $('#q').value, exact: $('#exact').checked };
+  try { localStorage.setItem('hocFilter', JSON.stringify(st)); } catch {}
+}
+function loadState() { try { return JSON.parse(localStorage.getItem('hocFilter')) || {}; } catch { return {}; } }
+
+function buildFilters() {
+  const st = loadState();
+  const vals = [...new Set(events.flatMap(e => e.ects))].sort((a,b) => a-b).map(String);
+  vals.push('unbekannt');
+  const sel = st.ects || ['2'];
+  $('#ectsGroup').innerHTML = '<b>ECTS</b>' + vals.map(v =>
+    `<label class="chip"><input type="checkbox" value="${v}" ${sel.includes(v)?'checked':''}>${v}</label>`).join('');
+  for (const [id, key] of [['#type','type'],['#lang','language']]) {
+    const opts = [...new Set(events.map(e => e[key]).filter(Boolean))].sort();
+    $(id).innerHTML = '<option value="">alle</option>' + opts.map(o => `<option>${esc(o)}</option>`).join('');
+  }
+  $('#type').value = st.type || ''; $('#lang').value = st.lang || '';
+  $('#q').value = st.q || ''; $('#exact').checked = !!st.exact;
+}
+
+function render() {
+  saveState();
+  const sel = [...document.querySelectorAll('#ectsGroup input:checked')].map(i => i.value);
+  const type = $('#type').value, lang = $('#lang').value, q = $('#q').value.toLowerCase().trim(), exact = $('#exact').checked;
+  const out = events.filter(e => {
+    if (sel.length) {
+      const ev = e.ects.map(String);
+      const ok = ev.length === 0 ? sel.includes('unbekannt')
+        : exact ? ev.every(v => sel.includes(v)) : ev.some(v => sel.includes(v));
+      if (!ok) return false;
+    }
+    if (type && e.type !== type) return false;
+    if (lang && e.language !== lang) return false;
+    if (q && !(e.title + ' ' + e.titleEn + ' ' + e.lecturers.join(' ')).toLowerCase().includes(q)) return false;
+    return true;
+  });
+  $('#count').textContent = `${out.length} von ${events.length} Veranstaltungen`;
+  $('#list').innerHTML = out.map(e => `
+    <div class="ev">
+      <a href="${e.url}" target="_blank" rel="noopener">${esc(e.title)}</a>
+      <div class="ects ${e.ects.length ? '' : 'unk'}">${e.ects.length ? e.ects.join(' / ') + ' ECTS' : 'unbekannt'}</div>
+      <div class="meta">${esc(e.type)} · ${esc(e.format)} · ${esc(e.language)} · ${esc(e.lecturers.join(', '))}</div>
+      <div class="meta" style="text-align:right">${e.registrations ?? 0}/${e.places ?? '?'} Anm.</div>
+      <div class="detail">Start: ${fmtDate(e.start)} · Anmeldung bis ${fmtDate(e.registrationEnd)}${e.ectsText?.length ? '<br>' + e.ectsText.map(esc).join('<br>') : ''}</div>
+    </div>`).join('') || '<div class="loading">Keine Treffer.</div>';
+}
+
+async function load(refresh) {
+  $('#list').innerHTML = '<div class="loading">Lade Kurse… (beim ersten Mal ca. 30 s, danach gecacht)</div>';
+  const term = new URLSearchParams(location.search).get('term');
+  const p = new URLSearchParams(); if (term) p.set('term', term); if (refresh) p.set('refresh', '1');
+  const r = await fetch('/api/events?' + p);
+  const d = await r.json();
+  if (!r.ok) { $('#list').innerHTML = `<div class="loading">Fehler: ${esc(d.error)}</div>`; return; }
+  events = d.events;
+  $('#title').textContent = `HoC-Veranstaltungen ${d.term_name}`;
+  buildFilters(); render();
+}
+
+document.addEventListener('change', e => { if (e.target.closest('.filters')) render(); });
+$('#q').addEventListener('input', render);
+$('#refresh').addEventListener('click', () => load(true));
+load(false);
+</script>
+</body>
+</html>
